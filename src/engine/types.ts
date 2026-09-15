@@ -3,6 +3,21 @@
 export type Element = 'fuoco' | 'ghiaccio' | 'terra';
 export type Keyword = 'guardiano' | 'carica' | 'rigenerazione' | 'scudo';
 
+// Effetti innescati (all'evocazione o alla morte). Tutti senza scelta del
+// bersaglio: quando serve un bersaglio la regola è deterministica.
+export type Trigger =
+  | { tipo: 'dannoTuttiAvversari'; valore: number }
+  | { tipo: 'dannoDragoPiuDebole'; valore: number } // il drago avversario con meno vita
+  | { tipo: 'dannoDragoPiuForte'; valore: number } // il drago avversario con più attacco
+  | { tipo: 'dannoGiocatore'; valore: number }
+  | { tipo: 'congelaPiuForte' }
+  | { tipo: 'pesca'; valore: number }
+  | { tipo: 'cristalli'; valore: number }
+  | { tipo: 'curaGiocatore'; valore: number }
+  | { tipo: 'potenziaAlleati'; attacco: number; vita: number }
+  | { tipo: 'scudoAlleati' }
+  | { tipo: 'evocaToken'; defId: string };
+
 export interface DragonDef {
   kind: 'drago';
   id: string;
@@ -14,6 +29,9 @@ export interface DragonDef {
   keywords?: Keyword[];
   icona: string; // nome icona game-icons (senza estensione)
   testo?: string; // testo descrittivo mostrato sulla carta
+  evocazione?: Trigger; // "Evocazione: ..." quando entra in campo
+  morte?: Trigger; // "Morte: ..." quando viene distrutto
+  token?: boolean; // non appartiene a nessun mazzo: viene creato da un effetto
 }
 
 export type SpellEffect =
@@ -82,6 +100,7 @@ export interface LogEntry {
 }
 
 export interface GameState {
+  vitaMax: [number, number];
   turno: number;
   attivo: PlayerId;
   giocatori: [PlayerState, PlayerState];
@@ -95,6 +114,7 @@ export interface GameState {
 // Eventi usati dalla UI per animazioni
 export type GameEvent =
   | { tipo: 'attacco'; da: number; a: number | 'giocatore'; danno: number; vantaggio: -1 | 0 | 1 }
+  | { tipo: 'trigger'; uid: number; elemento: Element; quando: 'evocazione' | 'morte' }
   | { tipo: 'incantesimo'; carta: string; a: number | 'giocatore' | 'tutti' | null }
   | { tipo: 'evoca'; uid: number }
   | { tipo: 'morte'; uid: number }

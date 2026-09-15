@@ -1,25 +1,44 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { Action, GameState, PlayerId, SpellDef, CardDef } from '../engine/types';
-import { MAX_CAMPO, VITA_INIZIALE } from '../engine/types';
+import type { Action, GameState, PlayerId, SpellDef, CardDef, Element } from '../engine/types';
+import { MAX_CAMPO } from '../engine/types';
 import { applica, azioniLegali, bersagliIncantesimo, nuovaPartita, puoAttaccare } from '../engine/rules';
-import { scegliAzione, type Livello, LIVELLI } from '../engine/ai';
-import { carta, ELEMENTI, KEYWORD_INFO, vantaggio } from '../engine/cards';
-import { mazzo } from '../engine/decks';
+import { scegliAzione, type Livello, type Profilo, PROFILI } from '../engine/ai';
+import { carta, ELEMENTI, KEYWORD_INFO, vantaggio, testoTrigger } from '../engine/cards';
+import type { Boss } from '../engine/campagna';
 import { Carta, CartaRetro, COLORE_ELEMENTO } from './Carta';
 import { Icon } from './Icon';
 import { suona } from '../audio';
 import { LivelloEffetti, SfondoVivo, useEffetti, type NuovoEffetto, type Punto } from './Effetti';
 
+/** Impostazioni persistenti scelte nel menu. */
 export interface ConfigPartita {
   nomeGiocatore: string;
   mazzoGiocatore: string;
   mazzoIA: string;
   livello: Livello;
   suoni: boolean;
+  veloce: boolean;
+  tutorialFatto: boolean;
+}
+
+/** Parametri di una singola partita (menu, campagna o tutorial). */
+export interface SetupPartita {
+  nomeGiocatore: string;
+  nomeIA: string;
+  mazzoIo: string | string[];
+  mazzoIA: string | string[];
+  livello: Livello;
+  profilo: Profilo;
+  vita?: [number, number];
+  seed?: number;
+  tutorial?: boolean;
+  boss?: Boss;
 }
 
 interface Props {
-  config: ConfigPartita;
+  setup: SetupPartita;
+  suoni: boolean;
+  veloce: boolean;
   onFine: (vinto: boolean) => void;
   onEsci: () => void;
 }
@@ -31,20 +50,37 @@ interface Fx { id: number; evento: GameState['ultimoEvento']; chi: PlayerId; aff
 const IO: PlayerId = 0;
 const IA: PlayerId = 1;
 
-export function Partita({ config, onFine, onEsci }: Props) {
-  const [state, setState] = useState<GameState>(() =>
-    nuovaPartita({ nomi: [config.nomeGiocatore, `IA ${LIVELLI[config.livello].nome}`], mazzi: [config.mazzoGiocatore, config.mazzoIA] }),
-  );
+/** Nel tutorial cerchiamo un seme in cui il giocatore inizia e ha un drago da 1 in mano. */
+function semeTutorial(setup: SetupPartita): number {
+  for (let seed = 1; seed < 500; seed++) {
+    const s = nuovaPartita({ nomi: ['a', 'b'], mazzi: [setup.mazzoIo, setup.mazzoIA], seed, iniziaPer: 0 });
+    const mano = s.giocatori[0].mano.map((c) => carta(c.defId));
+    if (mano.some((c) => c.kind === 'drago' && c.costo === 1) && mano.some((c) => c.kind === 'drago' && c.costo === 2) && mano.some((c) => c.kind === 'incantesimo')) return seed;
+  }
+  return 1;
+}
+
+function creaPartita(setup: SetupPartita): GameState {
+  const seed = setup.tutorial ? semeTutorial(setup) : setup.seed;
+  return nuovaPartita({ nomi: [setup.nomeGiocatore, setup.nomeIA], mazzi: [setup.mazzoIo, setup.mazzoIA], vita: setup.vita, seed, iniziaPer: setup.tutorial ? 0 : undefined });
+}
+
+export function Partita({ setup, suoni, veloce, onFine, onEsci }: Props) {
+  const [state, setState] = useState<GameState>(() => creaPartita(setup));
   const [sel, setSel] = useState<Selezione>(null);
   const [fx, setFx] = useState<Fx | null>(null);
   const [mostraLog, setMostraLog] = useState(false);
   const [dettaglio, setDettaglio] = useState<{ def: CardDef; campo?: GameState['giocatori'][0]['campo'][0] } | null>(null);
   const [pensa, setPensa] = useState(false);
+  const [confermaUscita, setConfermaUscita] = useState(false);
+  const [suggerimentiChiusi, setSuggerimentiChiusi] = useState<Set<string>>(new Set());
+  const [scrollMano, setScrollMano] = useState({ sx: false, dx: false });
   const fxId = useRef(0);
   const fineNotificata = useRef(false);
   const stateRef = useRef(state);
   stateRef.current = state;
   const contenitore = useRef<HTMLDivElement>(null);
+  const manoRef = useRef<HTMLElement>(null);
   const { effetti, aggiungi } = useEffetti();
   const [scossa, setScossa] = useState(false);
 
@@ -70,30 +106,39 @@ export function Partita({ config, onFine, onEsci }: Props) {
     for (const g of s.giocatori) for (const d of g.campo) { const c = centro(`[data-uid="${d.uid}"]`); if (c) posizioni.set(d.uid, c); }
     const ritratti: Record<PlayerId, Punto | null> = { 0: centro('[data-ritratto="0"]')?.p ?? null, 1: centro('[data-ritratto="1"]')?.p ?? null };
     const origineMano = centro(`[data-mano="${chi}"]`)?.p ?? ritratti[chi];
+    const avvId: PlayerId = chi === IO ? IA : IO;
 
     const ns = applica(s, azione);
     const ev = ns.ultimoEvento;
     const nuovi: NuovoEffetto[] = [];
     let affondo: Fx['affondo'];
     let ritardati: (() => NuovoEffetto[]) | null = null;
-    const elDi = (uid: number) => s.giocatori.flatMap((g) => g.campo).find((d) => d.uid === uid)?.elemento ?? 'neutro';
+    const elDi = (uid: number): Element | 'neutro' => s.giocatori.flatMap((g) => g.campo).find((d) => d.uid === uid)?.elemento ?? 'neutro';
+    const larg = contenitore.current?.clientWidth ?? 400;
+    const clampX = (x: number) => Math.min(Math.max(x, 80), larg - 80);
+    let elAzione: Element | 'neutro' = 'neutro';
+    let bersaglioPrincipale: number | 'giocatore' | null = null;
+    let ritardoDiff = 0;
 
     if (ev?.tipo === 'attacco') {
+      elAzione = elDi(ev.da);
+      bersaglioPrincipale = ev.a;
       const da = posizioni.get(ev.da);
-      const a = ev.a === 'giocatore' ? ritratti[chi === IO ? IA : IO] : posizioni.get(ev.a)?.p ?? null;
+      const a = ev.a === 'giocatore' ? ritratti[avvId] : posizioni.get(ev.a)?.p ?? null;
       if (da && a) {
         affondo = { uid: ev.da, dx: (a.x - da.p.x) * 0.6, dy: (a.y - da.p.y) * 0.6 };
-        nuovi.push({ tipo: 'esplosione', a, elemento: elDi(ev.da), forte: ev.vantaggio > 0 });
+        nuovi.push({ tipo: 'esplosione', a, elemento: elAzione, forte: ev.vantaggio > 0 });
         if (ev.a !== 'giocatore' && ev.vantaggio !== 0) {
-          const larg = contenitore.current?.clientWidth ?? 400;
-          nuovi.push({ tipo: 'testo', a: { x: Math.min(Math.max(a.x, 80), larg - 80), y: a.y - 40 }, testo: ev.vantaggio > 0 ? 'Super efficace!' : 'Poco efficace…', classe: ev.vantaggio > 0 ? 'super' : 'poco' });
+          nuovi.push({ tipo: 'testo', a: { x: clampX(a.x), y: a.y - 40 }, testo: ev.vantaggio > 0 ? 'Super efficace!' : 'Poco efficace…', classe: ev.vantaggio > 0 ? 'super' : 'poco' });
         }
         if (ev.a === 'giocatore' && chi === IA) setScossa(true);
       }
+      if (suoni) suona('attacco', elAzione);
+      ritardoDiff = 250;
     } else if (ev?.tipo === 'incantesimo') {
       const def = carta(ev.carta);
-      const el = def.elemento;
-      const avvId = chi === IO ? IA : IO;
+      elAzione = def.elemento;
+      bersaglioPrincipale = ev.a === 'tutti' ? null : ev.a;
       // bersagli come "riferimenti": rimisurati al momento dell'impatto, perché nel frattempo il layout può cambiare
       const bersagli: (number | 'giocatore')[] = [];
       if (ev.a === 'giocatore') bersagli.push('giocatore');
@@ -104,48 +149,91 @@ export function Partita({ config, onFine, onEsci }: Props) {
       const effetto = def.kind === 'incantesimo' ? def.effetto.tipo : 'danno';
       if (effetto === 'cura') {
         const r = ritratti[chi]; if (r) nuovi.push({ tipo: 'cura', a: r });
+        if (suoni) suona('cura');
       } else if (effetto === 'pesca' || effetto === 'cristalli') {
         const r = ritratti[chi]; if (r) nuovi.push({ tipo: 'evocazione', a: r, elemento: 'ghiaccio' });
+        if (suoni) suona('turno');
       } else {
         const benefico = effetto === 'potenzia' || effetto === 'scudo';
         for (const b of bersagli) {
           const a = posizioneDi(b);
-          if (origineMano && a) nuovi.push({ tipo: 'proiettile', da: origineMano, a, elemento: el });
+          if (origineMano && a) nuovi.push({ tipo: 'proiettile', da: origineMano, a, elemento: def.elemento });
         }
         ritardati = () => bersagli.flatMap((b): NuovoEffetto[] => {
           const a = posizioneDi(b);
           if (!a) return [];
-          return [benefico ? { tipo: 'cura', a } : { tipo: 'esplosione', a, elemento: el, forte: effetto === 'distruggi' }];
+          return [benefico ? { tipo: 'cura', a } : { tipo: 'esplosione', a, elemento: def.elemento, forte: effetto === 'distruggi' || effetto === 'dannoTutti' }];
         });
         if (ev.a === 'giocatore' && chi === IA) setTimeout(() => setScossa(true), 380);
+        if (suoni) suona(benefico ? 'cura' : 'incantesimo', def.elemento);
+        if (ev.a === 'tutti') bersaglioPrincipale = -1; // tutti i draghi avversari: già coperti
       }
+      ritardoDiff = 400;
     } else if (ev?.tipo === 'evoca') {
       // il drago non è ancora nel DOM: l'effetto viene posizionato nel prossimo frame
       const uid = ev.uid;
-      const el = ns.giocatori[chi].campo.find((d) => d.uid === uid)?.elemento ?? 'fuoco';
-      requestAnimationFrame(() => { const c = centro(`[data-uid="${uid}"]`); if (c) aggiungi([{ tipo: 'evocazione', a: c.p, elemento: el }]); });
+      const evocato = ns.giocatori[chi].campo.find((d) => d.uid === uid);
+      elAzione = evocato?.elemento ?? 'fuoco';
+      requestAnimationFrame(() => { const c = centro(`[data-uid="${uid}"]`); if (c) aggiungi([{ tipo: 'evocazione', a: c.p, elemento: evocato?.elemento ?? 'fuoco' }]); });
+      if (suoni) suona('evoca');
+      ritardoDiff = 350;
+    } else if (ev?.tipo === 'fineTurno') {
+      if (suoni) suona('turno');
     }
-    // Draghi distrutti: fantasma che si frantuma nella posizione che avevano
+
+    // ---- Effetti derivati dalle differenze di stato (trigger di Evocazione/Morte, contrattacchi) ----
+    const derivati: NuovoEffetto[] = [];
+    let morti = 0;
     for (const g of s.giocatori) {
       for (const d of g.campo) {
-        if (ns.giocatori[g.id].campo.some((x) => x.uid === d.uid)) continue;
+        const dopo = ns.giocatori[g.id].campo.find((x) => x.uid === d.uid);
         const c = posizioni.get(d.uid);
-        if (c) nuovi.push({ tipo: 'fantasma', a: { x: c.p.x - c.w / 2, y: c.p.y - c.h / 2 }, w: c.w, h: c.h, def: carta(d.defId), drago: { ...d, vita: 0 } });
+        if (!c) continue;
+        if (!dopo) {
+          // Drago distrutto: fantasma che si frantuma nella posizione che aveva
+          nuovi.push({ tipo: 'fantasma', a: { x: c.p.x - c.w / 2, y: c.p.y - c.h / 2 }, w: c.w, h: c.h, def: carta(d.defId), drago: { ...d, vita: 0 } });
+          morti++;
+          continue;
+        }
+        const colpitoDaAzione = bersaglioPrincipale === d.uid || (bersaglioPrincipale === -1 && g.id === avvId) || (ev?.tipo === 'attacco' && ev.da === d.uid);
+        if (dopo.vita < d.vita && !colpitoDaAzione) derivati.push({ tipo: 'esplosione', a: c.p, elemento: elAzione, forte: false });
+        if ((dopo.attacco > d.attacco || dopo.vitaMax > d.vitaMax || (dopo.scudo && !d.scudo)) && bersaglioPrincipale !== d.uid) derivati.push({ tipo: 'cura', a: c.p });
+        if (dopo.congelato && !d.congelato && bersaglioPrincipale !== d.uid) derivati.push({ tipo: 'esplosione', a: c.p, elemento: 'ghiaccio', forte: false });
+      }
+      // Vita del giocatore cambiata per un effetto non diretto
+      const prima = g.vita, dopo = ns.giocatori[g.id].vita;
+      const r = ritratti[g.id];
+      if (r && dopo < prima && bersaglioPrincipale !== 'giocatore' && ev?.tipo !== 'fineTurno') {
+        derivati.push({ tipo: 'esplosione', a: r, elemento: elAzione, forte: false });
+        if (g.id === IO) setTimeout(() => setScossa(true), ritardoDiff);
+      }
+      if (r && dopo > prima && ev?.tipo !== 'incantesimo') derivati.push({ tipo: 'cura', a: r });
+    }
+    // Token evocati da un effetto: anello dopo il render
+    for (const d of ns.giocatori[chi].campo) {
+      if (!s.giocatori[chi].campo.some((x) => x.uid === d.uid) && !(ev?.tipo === 'evoca' && ev.uid === d.uid)) {
+        const uid = d.uid, el = d.elemento;
+        setTimeout(() => { const c = centro(`[data-uid="${uid}"]`); if (c) aggiungi([{ tipo: 'evocazione', a: c.p, elemento: el }]); }, 60);
       }
     }
+    if (morti > 0 && suoni) setTimeout(() => suona('morte'), 150);
+
     // Il proiettile deve arrivare prima dell'impatto: gli effetti d'impatto vengono creati (e posizionati) dopo
     aggiungi(nuovi);
     if (ritardati) { const f = ritardati; setTimeout(() => aggiungi(f()), 380); }
+    if (derivati.length) {
+      const elSuono = elAzione;
+      setTimeout(() => { aggiungi(derivati); if (suoni && derivati.some((d) => d.tipo === 'esplosione')) suona('colpo', elSuono); }, ritardoDiff);
+    }
 
     if (ev) {
       fxId.current += 1;
       setFx({ id: fxId.current, evento: ev, chi, affondo });
-      if (config.suoni) suona(ev.tipo === 'attacco' ? 'attacco' : ev.tipo === 'incantesimo' ? 'incantesimo' : ev.tipo === 'evoca' ? 'evoca' : 'turno');
     }
     stateRef.current = ns;
     setState(ns);
     setSel(null);
-  }, [config.suoni, centro, aggiungi]);
+  }, [suoni, centro, aggiungi]);
 
   useEffect(() => {
     if (!scossa) return;
@@ -153,25 +241,26 @@ export function Partita({ config, onFine, onEsci }: Props) {
     return () => clearTimeout(t);
   }, [scossa]);
 
-  // Turno dell'IA: una azione ogni ~800 ms
+  // Turno dell'IA: una azione ogni ~750 ms (250 in modalità veloce)
   useEffect(() => {
     if (state.vincitore !== null || state.attivo !== IA) { setPensa(false); return; }
     setPensa(true);
+    const base = veloce ? 260 : 750;
     const t = setTimeout(() => {
-      const a = scegliAzione(state, config.livello);
+      const a = scegliAzione(state, setup.livello, Math.random, setup.profilo);
       esegui(a, IA);
-    }, state.ultimoEvento?.tipo === 'fineTurno' ? 900 : 750);
+    }, state.ultimoEvento?.tipo === 'fineTurno' ? base + 150 : base);
     return () => clearTimeout(t);
-  }, [state, config.livello, esegui]);
+  }, [state, setup.livello, setup.profilo, veloce, esegui]);
 
   // Fine partita
   useEffect(() => {
     if (state.vincitore !== null && !fineNotificata.current) {
       fineNotificata.current = true;
-      if (config.suoni) suona(state.vincitore === IO ? 'vittoria' : 'sconfitta');
+      if (suoni) suona(state.vincitore === IO ? 'vittoria' : 'sconfitta');
       onFine(state.vincitore === IO);
     }
-  }, [state.vincitore, onFine, config.suoni]);
+  }, [state.vincitore, onFine, suoni]);
 
   // Pulisci l'effetto dopo l'animazione
   useEffect(() => {
@@ -179,6 +268,17 @@ export function Partita({ config, onFine, onEsci }: Props) {
     const t = setTimeout(() => setFx((f) => (f?.id === fx.id ? null : f)), 900);
     return () => clearTimeout(t);
   }, [fx]);
+
+  // Indicatori di scorrimento della mano
+  useEffect(() => {
+    const el = manoRef.current;
+    if (!el) return;
+    const agg = () => setScrollMano({ sx: el.scrollLeft > 4, dx: el.scrollLeft + el.clientWidth < el.scrollWidth - 4 });
+    agg();
+    el.addEventListener('scroll', agg, { passive: true });
+    window.addEventListener('resize', agg);
+    return () => { el.removeEventListener('scroll', agg); window.removeEventListener('resize', agg); };
+  }, [io.mano.length]);
 
   // ---- Interazione ----
   const cartaSel = sel?.tipo === 'mano' ? io.mano.find((c) => c.uid === sel.uid) : undefined;
@@ -248,13 +348,34 @@ export function Partita({ config, onFine, onEsci }: Props) {
   // Anteprima del vantaggio quando si sta scegliendo un bersaglio
   const elSel = dragoSel?.elemento ?? (defSel?.kind === 'incantesimo' ? defSel.elemento : undefined);
 
+  // ---- Tutorial: suggerimenti contestuali ----
+  const suggerimento = useMemo(() => {
+    if (!setup.tutorial || !mioTurno || state.vincitore !== null) return null;
+    const puoAtt = io.campo.some(puoAttaccare);
+    const haDrago = legali.some((a) => a.tipo === 'giocaDrago');
+    const haInc = legali.some((a) => a.tipo === 'giocaIncantesimo');
+    const guardiano = ia.campo.some((d) => d.keywords.includes('guardiano'));
+    const lista: { id: string; testo: string; quando: boolean }[] = [
+      { id: 'evoca', quando: haDrago && io.campo.length === 0, testo: 'Tocca un drago in mano e premi Evoca. Il numero nel cerchio viola è il costo in cristalli: ne ottieni uno in più a ogni turno.' },
+      { id: 'guardiano', quando: puoAtt && guardiano, testo: 'Il drago avversario con "Guardiano" va attaccato per primo: finché è in campo protegge gli altri e il giocatore.' },
+      { id: 'faccia', quando: puoAtt && ia.campo.length === 0, testo: 'Il campo avversario è vuoto: tocca il tuo drago con il pallino dorato, poi il ritratto dell\'IA per colpirla direttamente.' },
+      { id: 'attacca', quando: puoAtt, testo: 'I draghi attaccano dal turno successivo all\'evocazione. Tocca quello con il pallino dorato, poi un bersaglio: Fuoco batte Ghiaccio, Ghiaccio batte Terra, Terra batte Fuoco (+1 danno, "Super efficace").' },
+      { id: 'incantesimo', quando: haInc, testo: 'Le carte senza attacco e vita sono incantesimi: si usano subito. Tocca la carta e poi il bersaglio, se ne richiede uno.' },
+      { id: 'fine', quando: !haMosse, testo: 'Non hai altre mosse: premi Fine turno. L\'IA giocherà il suo turno da sola.' },
+    ];
+    return lista.find((s) => s.quando && !suggerimentiChiusi.has(s.id)) ?? null;
+  }, [setup.tutorial, mioTurno, state.vincitore, io.campo, ia.campo, legali, haMosse, suggerimentiChiusi]);
+
+  const vinto = state.vincitore === IO;
+  const vitaMaxIo = state.vitaMax[IO], vitaMaxIa = state.vitaMax[IA];
+
   return (
     <div ref={contenitore} className={`partita ${sel ? 'in-selezione' : ''} ${scossa ? 'scossa' : ''}`} onClick={() => sel && setSel(null)}>
       <SfondoVivo />
       {/* ---- Avversario ---- */}
       <header className="barra barra-ia">
-        <button className="btn-icona" onClick={(e) => { e.stopPropagation(); onEsci(); }} title="Abbandona">✕</button>
-        <Ritratto id={IA} nome={ia.nome} vita={ia.vita} cristalli={ia.cristalli} cristalliMax={ia.cristalliMax} mano={ia.mano.length} mazzo={ia.mazzo.length}
+        <button className="btn-icona" onClick={(e) => { e.stopPropagation(); if (state.vincitore !== null) onEsci(); else setConfermaUscita(true); }} title="Abbandona">✕</button>
+        <Ritratto id={IA} nome={ia.nome} vita={ia.vita} vitaMax={vitaMaxIa} cristalli={ia.cristalli} cristalliMax={ia.cristalliMax} mano={ia.mano.length} mazzo={ia.mazzo.length}
           attivo={state.attivo === IA} bersagliabile={bersagli.has('giocatore')} colpito={fx?.evento?.tipo === 'attacco' && fx.evento.a === 'giocatore' && fx.chi === IO ? fx.evento.danno : (fx?.evento?.tipo === 'incantesimo' && fx.evento.a === 'giocatore' && fx.chi === IO) ? 1 : 0}
           onClick={(e) => { e.stopPropagation(); tapGiocatoreIA(); }} />
         <div className="mano-ia" data-mano="1" aria-label={`${ia.mano.length} carte in mano`}>
@@ -268,7 +389,7 @@ export function Partita({ config, onFine, onEsci }: Props) {
           return (
             <div key={d.uid} data-uid={d.uid} className={`slot el-${d.elemento} ${classiFx(fx, d.uid, IA)}`} style={stileAffondo(fx, d.uid)} onClick={(e) => { e.stopPropagation(); tapDragoIA(d.uid); }}>
               <Carta def={carta(d.defId)} suCampo={d} piccola bersagliabile={bersagli.has(d.uid)} />
-              {v !== 0 && <span className={`vantaggio ${v > 0 ? 'su' : 'giu'}`}>{v > 0 ? '×1.5' : '×0.75'}</span>}
+              {v !== 0 && <span className={`vantaggio ${v > 0 ? 'su' : 'giu'}`}>{v > 0 ? '+1' : '−1'}</span>}
               <NumeroDanno fx={fx} uid={d.uid} />
             </div>
           );
@@ -293,6 +414,13 @@ export function Partita({ config, onFine, onEsci }: Props) {
             )}
           </div>
         )}
+        {suggerimento && !sel && (
+          <div className="tutorial-hint">
+            <Icon nome="graduate-cap" size="1.2em" />
+            <span>{suggerimento.testo}</span>
+            <button className="btn" onClick={() => setSuggerimentiChiusi((s) => new Set(s).add(suggerimento.id))}>Ok</button>
+          </div>
+        )}
       </div>
 
       {/* ---- Io ---- */}
@@ -310,23 +438,27 @@ export function Partita({ config, onFine, onEsci }: Props) {
       </section>
 
       <footer className="barra barra-io" onClick={(e) => e.stopPropagation()}>
-        <Ritratto id={IO} nome={io.nome} vita={io.vita} cristalli={io.cristalli} cristalliMax={io.cristalliMax} mano={io.mano.length} mazzo={io.mazzo.length}
+        <Ritratto id={IO} nome={io.nome} vita={io.vita} vitaMax={vitaMaxIo} cristalli={io.cristalli} cristalliMax={io.cristalliMax} mano={io.mano.length} mazzo={io.mazzo.length}
           attivo={mioTurno} colpito={fx?.chi === IA && ((fx.evento?.tipo === 'attacco' && fx.evento.a === 'giocatore') || (fx.evento?.tipo === 'incantesimo' && fx.evento.a === 'giocatore')) ? 1 : 0} />
         <button className={`btn fine-turno ${mioTurno && !haMosse ? 'lampeggia' : ''}`} disabled={!mioTurno} onClick={() => esegui({ tipo: 'fineTurno' }, IO)}>
           {mioTurno ? 'Fine turno' : 'Turno IA…'}
         </button>
       </footer>
 
-      <section className="mano" data-mano="0" onClick={(e) => e.stopPropagation()}>
-        {io.mano.map((c) => {
-          const def = carta(c.defId);
-          return (
-            <Carta key={c.uid} def={def} selezionata={sel?.tipo === 'mano' && sel.uid === c.uid}
-              disabilitata={mioTurno && !giocabile(c.uid)} onClick={() => tapMano(c.uid)} />
-          );
-        })}
-        {io.mano.length === 0 && <div className="campo-vuoto">Mano vuota</div>}
-      </section>
+      <div className={`mano-contenitore ${scrollMano.sx ? 'scroll-sx' : ''} ${scrollMano.dx ? 'scroll-dx' : ''}`}>
+        <section className="mano" data-mano="0" ref={manoRef} onClick={(e) => e.stopPropagation()}>
+          {io.mano.map((c) => {
+            const def = carta(c.defId);
+            return (
+              <Carta key={c.uid} def={def} selezionata={sel?.tipo === 'mano' && sel.uid === c.uid}
+                disabilitata={mioTurno && !giocabile(c.uid)} onClick={() => tapMano(c.uid)} />
+            );
+          })}
+          {io.mano.length === 0 && <div className="campo-vuoto">Mano vuota</div>}
+        </section>
+        {scrollMano.dx && <span className="mano-freccia dx" onClick={() => manoRef.current?.scrollBy({ left: 160, behavior: 'smooth' })}>›</span>}
+        {scrollMano.sx && <span className="mano-freccia sx" onClick={() => manoRef.current?.scrollBy({ left: -160, behavior: 'smooth' })}>‹</span>}
+      </div>
 
       <LivelloEffetti effetti={effetti} />
 
@@ -349,6 +481,18 @@ export function Partita({ config, onFine, onEsci }: Props) {
           </div>
         </div>
       )}
+      {confermaUscita && (
+        <div className="overlay" onClick={() => setConfermaUscita(false)}>
+          <div className="pannello risultato" onClick={(e) => e.stopPropagation()}>
+            <h3>Abbandonare la partita?</h3>
+            <p className="muted">La partita in corso andrà persa{setup.boss ? ' (la campagna non avanza)' : ''}.</p>
+            <div className="riga-btn">
+              <button className="btn" onClick={() => setConfermaUscita(false)}>Continua a giocare</button>
+              <button className="btn primario" onClick={onEsci}>Abbandona</button>
+            </div>
+          </div>
+        </div>
+      )}
       {sel?.tipo === 'mano' && defSel && (
         <div className={`anteprima ${defSel.kind === 'incantesimo' && ['potenzia', 'scudo'].includes(defSel.effetto.tipo) ? 'alto' : ''}`} onClick={(e) => e.stopPropagation()}>
           <Carta def={defSel} className="grande" />
@@ -357,13 +501,21 @@ export function Partita({ config, onFine, onEsci }: Props) {
       )}
       {state.vincitore !== null && (
         <div className="overlay fine">
-          <div className={`pannello risultato ${state.vincitore === IO ? 'vittoria' : 'sconfitta'}`}>
-            <Icon nome={state.vincitore === IO ? 'trophy' : 'skull'} size={72} />
-            <h2>{state.vincitore === IO ? 'Vittoria!' : 'Sconfitta'}</h2>
-            <p>{state.vincitore === IO ? `Hai sconfitto ${ia.nome} in ${state.turno} turni.` : `${ia.nome} ha avuto la meglio dopo ${state.turno} turni.`}</p>
+          <div className={`pannello risultato ${vinto ? 'vittoria' : 'sconfitta'}`}>
+            <Icon nome={vinto ? 'trophy' : 'skull'} size={72} />
+            <h2>{vinto ? 'Vittoria!' : 'Sconfitta'}</h2>
+            <p>{vinto ? `Hai sconfitto ${ia.nome} in ${state.turno} turni.` : `${ia.nome} ha avuto la meglio dopo ${state.turno} turni.`}</p>
+            {setup.boss && vinto && setup.boss.ricompensa.length > 0 && (
+              <div className="ricompensa">
+                <div className="muted">Carte sbloccate per il deck builder</div>
+                <div className="griglia-carte">{setup.boss.ricompensa.map((id) => <Carta key={id} def={carta(id)} piccola />)}</div>
+              </div>
+            )}
+            {setup.boss && vinto && setup.boss.ricompensa.length === 0 && <p className="oro">Hai completato la campagna! Tutte le carte sono sbloccate.</p>}
+            {setup.tutorial && <p className="muted">Tutorial completato: ora conosci le basi. Nel menu trovi la campagna e il deck builder.</p>}
             <div className="riga-btn">
-              <button className="btn" onClick={onEsci}>Menu</button>
-              <button className="btn primario" onClick={() => { fineNotificata.current = false; setState(nuovaPartita({ nomi: [config.nomeGiocatore, ia.nome], mazzi: [config.mazzoGiocatore, config.mazzoIA] })); }}>Rivincita</button>
+              <button className="btn" onClick={onEsci}>{setup.boss ? 'Campagna' : 'Menu'}</button>
+              {!setup.tutorial && <button className="btn primario" onClick={() => { fineNotificata.current = false; setSuggerimentiChiusi(new Set()); setState(creaPartita({ ...setup, seed: undefined })); }}>{vinto ? 'Rigioca' : 'Riprova'}</button>}
             </div>
           </div>
         </div>
@@ -394,15 +546,15 @@ function NumeroDanno({ fx, uid }: { fx: Fx | null; uid: number }) {
 }
 
 interface RitrattoProps {
-  nome: string; vita: number; cristalli: number; cristalliMax: number; mano: number; mazzo: number;
+  nome: string; vita: number; vitaMax: number; cristalli: number; cristalliMax: number; mano: number; mazzo: number;
   attivo: boolean; bersagliabile?: boolean; colpito?: number; onClick?: (e: React.MouseEvent) => void; id: PlayerId;
 }
-function Ritratto({ nome, vita, cristalli, cristalliMax, mano, mazzo, attivo, bersagliabile, colpito, onClick, id }: RitrattoProps) {
-  const pct = Math.max(0, Math.min(100, (vita / VITA_INIZIALE) * 100));
+function Ritratto({ nome, vita, vitaMax, cristalli, cristalliMax, mano, mazzo, attivo, bersagliabile, colpito, onClick, id }: RitrattoProps) {
+  const pct = Math.max(0, Math.min(100, (vita / vitaMax) * 100));
   return (
     <div data-ritratto={id} className={`ritratto ${attivo ? 'attivo' : ''} ${bersagliabile ? 'bersagliabile' : ''} ${colpito ? 'anim-colpito' : ''} ${vita <= 8 ? 'pericolo' : ''}`} onClick={onClick}>
       <div className="ritratto-nome">{nome}</div>
-      <div className="vita-barra"><div className="vita-fill" style={{ width: `${pct}%` }} /><span>{Math.max(0, vita)} / {VITA_INIZIALE}</span></div>
+      <div className="vita-barra"><div className="vita-fill" style={{ width: `${pct}%` }} /><span>{Math.max(0, vita)} / {vitaMax}</span></div>
       <div className="ritratto-info">
         <span title="Cristalli"><Icon nome="crystal-bars" size="1em" /> {cristalli}/{cristalliMax}</span>
         <span title="Carte in mano"><Icon nome="card-draw" size="1em" /> {mano}</span>
@@ -417,6 +569,7 @@ function Ritratto({ nome, vita, cristalli, cristalliMax, mano, mazzo, attivo, be
 
 export function DescrizioneCarta({ def }: { def: CardDef }) {
   const el = def.elemento;
+  const senzaAbilita = def.kind === 'drago' && (def.keywords ?? []).length === 0 && !def.evocazione && !def.morte;
   return (
     <div className="descrizione">
       <div className="descr-el" style={{ color: COLORE_ELEMENTO[el] }}>
@@ -426,12 +579,12 @@ export function DescrizioneCarta({ def }: { def: CardDef }) {
       {def.kind === 'drago' && (def.keywords ?? []).map((k) => (
         <div key={k} className="descr-kw"><b>{KEYWORD_INFO[k].nome}</b>: {KEYWORD_INFO[k].testo}</div>
       ))}
+      {def.kind === 'drago' && def.evocazione && <div className="descr-kw"><b>Evocazione</b>: {testoTrigger(def.evocazione)}.</div>}
+      {def.kind === 'drago' && def.morte && <div className="descr-kw"><b>Morte</b>: {testoTrigger(def.morte)}.</div>}
       {def.kind === 'incantesimo' && <div className="descr-kw">{(def as SpellDef).testo}</div>}
-      {def.kind === 'drago' && (def.keywords ?? []).length === 0 && <div className="descr-kw muted">Nessuna abilità speciale.</div>}
+      {senzaAbilita && <div className="descr-kw muted">Nessuna abilità speciale.</div>}
     </div>
   );
 }
 
-export function nomeMazzo(id: string) {
-  return mazzo(id).nome;
-}
+export { PROFILI };

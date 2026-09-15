@@ -22,7 +22,13 @@ orientamento orizzontale (l'immagine viene ritagliata al centro con `object-fit:
 | f11 Fenice Draconica | g11 Idra di Ghiaccio | t11 Colosso di Granito |
 | f12 Ignis, Cuore del Vesuvio | g12 Glacia, Regina Eterna | t12 Gaia, Madre della Terra |
 
+Draghi con effetto: f13 Drago Incendiario, f14 Drago Kamikaze, f15 Araldo della Cenere, f16 Drago della Pira,
+g13 Drago Gelido, g14 Sentinella di Cristallo, g15 Drago Oracolo, g16 Drago dell'Inverno,
+t13 Drago Germoglio, t14 Drago Radicato, t15 Custode Antico, t16 Drago Patriarca; token tk1 Germoglio.
+
 Incantesimi: sf1–sf4 (fuoco), sg1–sg4 (ghiaccio), st1–st4 (terra), sn1–sn4 (neutri).
+
+Senza immagini le carte usano un'illustrazione procedurale (sfondo a tema generato dall'id + icona).
 
 ## Immagini consigliate (Pixabay, licenza Pixabay: uso libero, nessuna attribuzione)
 

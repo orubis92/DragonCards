@@ -1,9 +1,9 @@
 import {
   type Action, type CardInstance, type DragonOnBoard, type Element, type GameState, type LogEntry,
-  type PlayerId, type PlayerState, type SpellDef, type DragonDef,
+  type PlayerId, type PlayerState, type SpellDef, type DragonDef, type Trigger,
   MAX_CAMPO, MAX_MANO, VITA_INIZIALE, CRISTALLI_MAX, MANO_INIZIALE,
 } from './types';
-import { carta, vantaggio, dannoElementale, ELEMENTI } from './cards';
+import { carta, vantaggio, dannoElementale, ELEMENTI, testoTrigger } from './cards';
 import { mazzo as mazzoDef } from './decks';
 
 // ---------------------------------------------------------------------------
@@ -30,11 +30,13 @@ function mescola<T>(arr: T[], state: GameState): T[] {
 // ---------------------------------------------------------------------------
 export function nuovaPartita(opts: {
   nomi: [string, string];
-  mazzi: [string, string];
+  mazzi: [string | string[], string | string[]]; // id di un mazzo predefinito oppure lista di id carta
   seed?: number;
   iniziaPer?: PlayerId;
+  vita?: [number, number];
 }): GameState {
   const state: GameState = {
+    vitaMax: opts.vita ?? [VITA_INIZIALE, VITA_INIZIALE],
     turno: 0,
     attivo: 0,
     giocatori: [creaGiocatore(0, opts.nomi[0]), creaGiocatore(1, opts.nomi[1])],
@@ -45,11 +47,13 @@ export function nuovaPartita(opts: {
     ultimoEvento: null,
   };
   for (const pid of [0, 1] as PlayerId[]) {
-    const def = mazzoDef(opts.mazzi[pid]);
-    const carte: CardInstance[] = def.carte.map((defId) => ({ uid: state.nextUid++, defId }));
+    const lista = typeof opts.mazzi[pid] === 'string' ? mazzoDef(opts.mazzi[pid] as string).carte : (opts.mazzi[pid] as string[]);
+    const carte: CardInstance[] = lista.map((defId) => ({ uid: state.nextUid++, defId }));
     state.giocatori[pid].mazzo = mescola(carte, state);
     for (let i = 0; i < MANO_INIZIALE; i++) pesca(state, pid, false);
   }
+  state.giocatori[0].vita = state.vitaMax[0];
+  state.giocatori[1].vita = state.vitaMax[1];
   state.attivo = opts.iniziaPer ?? (rand(state) < 0.5 ? 0 : 1);
   // Chi inizia per secondo pesca una carta in più per compensare
   pesca(state, other(state.attivo), false);
@@ -181,7 +185,7 @@ export function bersagliIncantesimo(state: GameState, pid: PlayerId, def: SpellD
     case 'dannoTutti':
       return avv.campo.length > 0 ? [undefined] : [];
     case 'cura':
-      return p.vita < VITA_INIZIALE ? [undefined] : [];
+      return p.vita < state.vitaMax[pid] ? [undefined] : [];
     case 'pesca':
       return p.mazzo.length > 0 ? [undefined] : [];
     case 'cristalli':
@@ -218,14 +222,14 @@ export function applicaInPlace(state: GameState, azione: Action): void {
       if (def.kind !== 'drago' || def.costo > p.cristalli || p.campo.length >= MAX_CAMPO) throw new Error('Mossa illegale');
       p.mano.splice(idx, 1);
       p.cristalli -= def.costo;
-      const kw = def.keywords ?? [];
-      p.campo.push({
-        uid: c.uid, defId: c.defId, attacco: def.attacco, vita: def.vita, vitaMax: def.vita,
-        puoAttaccare: kw.includes('carica'), haAttaccato: false, congelato: false,
-        scudo: kw.includes('scudo'), keywords: kw.slice(), elemento: def.elemento,
-      });
+      mettiInCampo(state, pid, c.uid, def);
       state.ultimoEvento = { tipo: 'evoca', uid: c.uid };
       log(state, pid, `${p.nome} evoca ${def.nome} (${def.attacco}/${def.vita}).`, 'gioca');
+      if (def.evocazione) {
+        log(state, pid, `Evocazione di ${def.nome}: ${testoTrigger(def.evocazione)}.`, 'gioca');
+        risolviTrigger(state, pid, def.evocazione, c.uid);
+        rimuoviMorti(state);
+      }
       break;
     }
     case 'giocaIncantesimo': {
@@ -257,7 +261,7 @@ export function applicaInPlace(state: GameState, azione: Action): void {
         att.haAttaccato = true;
         const v = vantaggio(att.elemento, dif.elemento);
         const dannoA = dannoElementale(att.attacco, v);
-        const dannoD = dannoElementale(dif.attacco, vantaggio(dif.elemento, att.elemento));
+        const dannoD = dif.attacco; // il contrattacco non è modificato dal triangolo: il vantaggio premia chi attacca
         const infl = infliggi(dif, dannoA);
         const sub = infliggi(att, dannoD);
         state.ultimoEvento = { tipo: 'attacco', da: att.uid, a: dif.uid, danno: infl, vantaggio: v };
@@ -285,15 +289,95 @@ function infliggi(d: DragonOnBoard, danno: number): number {
   return danno;
 }
 
+function mettiInCampo(state: GameState, pid: PlayerId, uid: number, def: DragonDef): DragonOnBoard | null {
+  const p = state.giocatori[pid];
+  if (p.campo.length >= MAX_CAMPO) return null;
+  const kw = def.keywords ?? [];
+  const d: DragonOnBoard = {
+    uid, defId: def.id, attacco: def.attacco, vita: def.vita, vitaMax: def.vita,
+    puoAttaccare: kw.includes('carica'), haAttaccato: false, congelato: false,
+    scudo: kw.includes('scudo'), keywords: kw.slice(), elemento: def.elemento,
+  };
+  p.campo.push(d);
+  return d;
+}
+
+/** Rimuove i draghi a vita zero risolvendo gli effetti di Morte (che possono causarne altri). */
 function rimuoviMorti(state: GameState) {
-  for (const p of state.giocatori) {
-    const morti = p.campo.filter((d) => d.vita <= 0);
-    for (const m of morti) {
-      p.cimitero.push({ uid: m.uid, defId: m.defId });
-      log(state, p.id, `${carta(m.defId).nome} viene distrutto.`, 'morte');
+  for (let giro = 0; giro < 10; giro++) {
+    const daRisolvere: { pid: PlayerId; d: DragonOnBoard }[] = [];
+    for (const p of state.giocatori) {
+      for (const m of p.campo.filter((d) => d.vita <= 0)) {
+        p.cimitero.push({ uid: m.uid, defId: m.defId });
+        log(state, p.id, `${carta(m.defId).nome} viene distrutto.`, 'morte');
+        daRisolvere.push({ pid: p.id, d: m });
+      }
+      p.campo = p.campo.filter((d) => d.vita > 0);
     }
-    p.campo = p.campo.filter((d) => d.vita > 0);
+    if (daRisolvere.length === 0) return;
+    for (const { pid, d } of daRisolvere) {
+      const def = carta(d.defId) as DragonDef;
+      if (def.kind === 'drago' && def.morte) {
+        log(state, pid, `Morte di ${def.nome}: ${testoTrigger(def.morte)}.`, 'morte');
+        risolviTrigger(state, pid, def.morte, d.uid);
+      }
+    }
   }
+}
+
+/** Risolve un effetto innescato per il giocatore `pid`. Non rimuove i morti: lo fa il chiamante. */
+export function risolviTrigger(state: GameState, pid: PlayerId, t: Trigger, uidSorgente: number) {
+  const p = state.giocatori[pid];
+  const avv = state.giocatori[other(pid)];
+  const sorgente = p.campo.find((d) => d.uid === uidSorgente);
+  const el: Element = sorgente?.elemento ?? (carta((p.cimitero.find((c) => c.uid === uidSorgente) ?? { defId: 'f01' }).defId) as DragonDef).elemento;
+  const vivi = () => avv.campo.filter((d) => d.vita > 0);
+  switch (t.tipo) {
+    case 'dannoTuttiAvversari':
+      for (const d of vivi()) infliggi(d, dannoElementale(t.valore, vantaggio(el, d.elemento)));
+      break;
+    case 'dannoDragoPiuDebole': {
+      const b = vivi().sort((a, b) => a.vita - b.vita || a.attacco - b.attacco)[0];
+      if (b) infliggi(b, dannoElementale(t.valore, vantaggio(el, b.elemento)));
+      break;
+    }
+    case 'dannoDragoPiuForte': {
+      const b = vivi().sort((a, b) => b.attacco - a.attacco || b.vita - a.vita)[0];
+      if (b) infliggi(b, dannoElementale(t.valore, vantaggio(el, b.elemento)));
+      break;
+    }
+    case 'dannoGiocatore':
+      avv.vita -= t.valore;
+      break;
+    case 'congelaPiuForte': {
+      const b = vivi().filter((d) => !d.congelato).sort((a, b) => b.attacco - a.attacco)[0];
+      if (b) b.congelato = true;
+      break;
+    }
+    case 'pesca':
+      for (let i = 0; i < t.valore; i++) pesca(state, pid);
+      break;
+    case 'cristalli':
+      p.cristalli += t.valore;
+      break;
+    case 'curaGiocatore':
+      p.vita = Math.min(state.vitaMax[pid], p.vita + t.valore);
+      break;
+    case 'potenziaAlleati':
+      for (const d of p.campo) if (d.uid !== uidSorgente) { d.attacco += t.attacco; d.vita += t.vita; d.vitaMax += t.vita; }
+      break;
+    case 'scudoAlleati':
+      for (const d of p.campo) if (d.uid !== uidSorgente) d.scudo = true;
+      break;
+    case 'evocaToken': {
+      const def = carta(t.defId) as DragonDef;
+      const d = mettiInCampo(state, pid, state.nextUid++, def);
+      if (d) d.puoAttaccare = false;
+      break;
+    }
+  }
+  state.ultimoEvento = state.ultimoEvento ?? { tipo: 'trigger', uid: uidSorgente, elemento: el, quando: 'evocazione' };
+  controllaVittoria(state);
 }
 
 function risolviIncantesimo(state: GameState, pid: PlayerId, def: SpellDef, bersaglio: number | 'giocatore' | undefined) {
@@ -330,7 +414,7 @@ function risolviIncantesimo(state: GameState, pid: PlayerId, def: SpellDef, bers
       break;
     }
     case 'cura':
-      p.vita = Math.min(VITA_INIZIALE, p.vita + e.valore);
+      p.vita = Math.min(state.vitaMax[pid], p.vita + e.valore);
       log(state, pid, `${p.nome} lancia ${nome} e recupera ${e.valore} vita.`, 'incantesimo');
       break;
     case 'potenzia': {

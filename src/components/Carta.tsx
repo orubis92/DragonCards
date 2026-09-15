@@ -1,7 +1,11 @@
 import { useState } from 'react';
 import type { CardDef, DragonOnBoard, Element } from '../engine/types';
-import { ELEMENTI, KEYWORD_INFO } from '../engine/cards';
+import { ELEMENTI, KEYWORD_INFO, testoDrago } from '../engine/cards';
 import { Icon } from './Icon';
+import { ArteProcedurale } from './Arte';
+
+// Ricorda le immagini assenti per non ritentare a ogni render
+const immaginiMancanti = new Set<string>();
 
 export const COLORE_ELEMENTO: Record<Element | 'neutro', string> = {
   fuoco: '#ff6b35', ghiaccio: '#5cc8ff', terra: '#7ac74f', neutro: '#c9a7ff',
@@ -24,7 +28,7 @@ interface Props {
 export function Carta({ def, suCampo, selezionata, bersagliabile, disabilitata, piccola, onClick, className = '', style }: Props) {
   const el = def.elemento;
   const colore = COLORE_ELEMENTO[el];
-  const [imgOk, setImgOk] = useState(true);
+  const [imgOk, setImgOk] = useState(!immaginiMancanti.has(def.id));
   const src = `${import.meta.env.BASE_URL}draghi/${def.id}.jpg`;
 
   const attacco = suCampo ? suCampo.attacco : def.kind === 'drago' ? def.attacco : null;
@@ -54,24 +58,20 @@ export function Carta({ def, suCampo, selezionata, bersagliabile, disabilitata, 
       </div>
       <div className="carta-arte">
         {imgOk ? (
-          <img src={src} alt="" onError={() => setImgOk(false)} loading="lazy" draggable={false} />
+          <img src={src} alt="" onError={() => { immaginiMancanti.add(def.id); setImgOk(false); }} loading="lazy" draggable={false} />
         ) : (
-          <div className="arte-icona">
-            <Icon nome={def.icona} size="78%" color="rgba(255,255,255,0.92)" />
-          </div>
+          <ArteProcedurale id={def.id} elemento={el} icona={def.icona} incantesimo={def.kind === 'incantesimo'} />
         )}
         {suCampo?.scudo && <span className="badge-scudo" title="Scudo"><Icon nome="shield" size="1em" /></span>}
         {suCampo?.congelato && <span className="badge-congelato" title="Congelato"><Icon nome="snowflake-2" size="1em" /></span>}
       </div>
       {!piccola && (
         <div className="carta-testo">
-          {def.kind === 'drago' ? (
-            kw.length > 0 ? kw.map((k) => KEYWORD_INFO[k].nome).join(' · ') : (def.testo ?? '')
-          ) : def.testo}
+          {def.kind === 'drago' ? (testoDrago(def) || (def.testo ?? '')) : def.testo}
         </div>
       )}
-      {piccola && kw.length > 0 && (
-        <div className="carta-kw">{kw.map((k) => KEYWORD_INFO[k].nome[0]).join('')}</div>
+      {piccola && (kw.length > 0 || (def.kind === 'drago' && (def.evocazione || def.morte))) && (
+        <div className="carta-kw">{kw.map((k) => KEYWORD_INFO[k].nome[0]).join('')}{def.kind === 'drago' && def.evocazione ? 'E' : ''}{def.kind === 'drago' && def.morte ? 'M' : ''}</div>
       )}
       {def.kind === 'drago' && (
         <div className="carta-stats">

@@ -1,4 +1,4 @@
-import type { CardDef, DragonDef, SpellDef, Element } from './types';
+import type { CardDef, DragonDef, SpellDef, Element, Trigger } from './types';
 
 // ---------------------------------------------------------------------------
 // Catalogo carte. Ogni drago: costo in cristalli, attacco, vita, elemento.
@@ -12,24 +12,24 @@ const D = (
 
 export const DRAGHI: DragonDef[] = [
   // ---- FUOCO: attacco alto, vita bassa, Carica ----
-  D('f01', 'Cucciolo di Brace', 'fuoco', 1, 2, 1, 'salamander'),
-  D('f02', 'Salamandra Ardente', 'fuoco', 1, 1, 2, 'lizard-tongue'),
+  D('f01', 'Cucciolo di Brace', 'fuoco', 1, 2, 1, 'gecko'),
+  D('f02', 'Salamandra Ardente', 'fuoco', 1, 1, 2, 'chameleon-glyph'),
   D('f03', 'Viverna Rossa', 'fuoco', 2, 3, 2, 'wyvern'),
   D('f04', 'Drago di Cenere', 'fuoco', 2, 2, 2, 'dragon-spiral', ['carica']),
-  D('f05', 'Sputafuoco', 'fuoco', 3, 4, 3, 'fire-breath'),
+  D('f05', 'Sputafuoco', 'fuoco', 3, 4, 3, 'dragon-breath'),
   D('f06', 'Drago della Fornace', 'fuoco', 3, 3, 3, 'dragon-head', ['carica']),
   D('f07', 'Serpe di Lava', 'fuoco', 4, 5, 4, 'sea-serpent'),
   D('f08', 'Drago Meteora', 'fuoco', 4, 4, 3, 'burning-meteor', ['carica']),
   D('f09', 'Signore delle Fiamme', 'fuoco', 5, 6, 5, 'spiked-dragon-head'),
   D('f10', 'Drago Vulcanico', 'fuoco', 6, 7, 6, 'volcano', [], ),
-  D('f11', 'Fenice Draconica', 'fuoco', 7, 6, 7, 'spiky-wing', ['rigenerazione', 'carica']),
+  D('f11', 'Fenice Draconica', 'fuoco', 7, 6, 7, 'fire-tail', ['rigenerazione', 'carica']),
   D('f12', 'Ignis, Cuore del Vesuvio', 'fuoco', 8, 9, 8, 'double-dragon', ['carica']),
 
   // ---- GHIACCIO: equilibrati, Scudo ----
-  D('g01', 'Cucciolo di Neve', 'ghiaccio', 1, 1, 2, 'snowflake-1'),
+  D('g01', 'Cucciolo di Neve', 'ghiaccio', 1, 1, 2, 'velociraptor'),
   D('g02', 'Lucertola Glaciale', 'ghiaccio', 1, 2, 1, 'horned-reptile'),
-  D('g03', 'Viverna Bianca', 'ghiaccio', 2, 2, 3, 'wyvern'),
-  D('g04', 'Drago di Brina', 'ghiaccio', 2, 2, 2, 'frozen-orb', ['scudo']),
+  D('g03', 'Viverna Bianca', 'ghiaccio', 2, 2, 3, 'spiky-wing'),
+  D('g04', 'Drago di Brina', 'ghiaccio', 2, 2, 2, 'sea-serpent', ['scudo']),
   D('g05', 'Serpente dei Ghiacci', 'ghiaccio', 3, 3, 4, 'sea-dragon'),
   D('g06', 'Drago Cristallino', 'ghiaccio', 3, 3, 3, 'crystal-growth', ['scudo']),
   D('g07', 'Custode del Ghiacciaio', 'ghiaccio', 4, 3, 6, 'ice-golem', ['guardiano']),
@@ -40,10 +40,10 @@ export const DRAGHI: DragonDef[] = [
   D('g12', 'Glacia, Regina Eterna', 'ghiaccio', 8, 8, 9, 'dragon-orb', ['scudo', 'guardiano']),
 
   // ---- TERRA: vita alta, Guardiano e Rigenerazione ----
-  D('t01', 'Cucciolo di Roccia', 'terra', 1, 1, 3, 'rock'),
+  D('t01', 'Cucciolo di Roccia', 'terra', 1, 1, 3, 'dinosaur-egg'),
   D('t02', 'Geco di Pietra', 'terra', 1, 1, 2, 'reptile-tail', ['guardiano']),
   D('t03', 'Drago delle Radici', 'terra', 2, 2, 3, 'tree-roots'),
-  D('t04', 'Drago Muschioso', 'terra', 2, 1, 4, 'seedling', ['rigenerazione']),
+  D('t04', 'Drago Muschioso', 'terra', 2, 1, 4, 'sea-turtle', ['rigenerazione']),
   D('t05', 'Golem Draconico', 'terra', 3, 2, 5, 'rock-golem', ['guardiano']),
   D('t06', 'Drago di Quarzo', 'terra', 3, 3, 4, 'crystal-cluster'),
   D('t07', 'Guardiano della Foresta', 'terra', 4, 3, 6, 'oak', ['guardiano']),
@@ -52,7 +52,57 @@ export const DRAGHI: DragonDef[] = [
   D('t10', 'Tirannodrago', 'terra', 6, 6, 7, 'dinosaur-rex'),
   D('t11', 'Colosso di Granito', 'terra', 7, 5, 10, 'golem-head', ['guardiano']),
   D('t12', 'Gaia, Madre della Terra', 'terra', 8, 7, 10, 'drakkar-dragon', ['guardiano', 'rigenerazione']),
+
+  // ---- Draghi con effetti (v0.3): si sbloccano con la campagna ----
+  E('f13', 'Drago Incendiario', 'fuoco', 2, 2, 1, 'snake-tongue', { evocazione: { tipo: 'dannoDragoPiuDebole', valore: 2 } }),
+  E('f14', 'Drago Kamikaze', 'fuoco', 3, 4, 2, 'pterodactylus', { morte: { tipo: 'dannoTuttiAvversari', valore: 2 } }),
+  E('f15', 'Araldo della Cenere', 'fuoco', 4, 3, 4, 'burning-embers', { evocazione: { tipo: 'dannoGiocatore', valore: 3 } }),
+  E('f16', 'Drago della Pira', 'fuoco', 6, 5, 5, 'fire-shrine', { evocazione: { tipo: 'dannoTuttiAvversari', valore: 2 }, keywords: ['carica'] }),
+  E('g13', 'Drago Gelido', 'ghiaccio', 2, 1, 3, 'ice-cube', { evocazione: { tipo: 'congelaPiuForte' } }),
+  E('g14', 'Sentinella di Cristallo', 'ghiaccio', 3, 2, 4, 'crystal-shrine', { morte: { tipo: 'scudoAlleati' }, keywords: ['guardiano'] }),
+  E('g15', 'Drago Oracolo', 'ghiaccio', 4, 3, 4, 'crystal-ball', { evocazione: { tipo: 'pesca', valore: 2 } }),
+  E('g16', 'Drago dell\'Inverno', 'ghiaccio', 6, 5, 6, 'frozen-orb', { evocazione: { tipo: 'dannoDragoPiuForte', valore: 4 } }),
+  E('t13', 'Drago Germoglio', 'terra', 2, 1, 2, 'seedling', { morte: { tipo: 'evocaToken', defId: 'tk1' } }),
+  E('t14', 'Drago Radicato', 'terra', 3, 2, 4, 'plant-roots', { evocazione: { tipo: 'cristalli', valore: 1 } }),
+  E('t15', 'Custode Antico', 'terra', 4, 2, 6, 'stone-tower', { evocazione: { tipo: 'curaGiocatore', valore: 4 }, keywords: ['guardiano'] }),
+  E('t16', 'Drago Patriarca', 'terra', 6, 4, 7, 'oak', { evocazione: { tipo: 'potenziaAlleati', attacco: 1, vita: 1 }, morte: { tipo: 'potenziaAlleati', attacco: 1, vita: 1 } }),
+
+  // ---- Token (non nei mazzi) ----
+  { ...D('tk1', 'Germoglio', 'terra', 0, 1, 1, 'seedling'), token: true },
 ];
+
+function E(
+  id: string, nome: string, elemento: Element, costo: number, attacco: number, vita: number, icona: string,
+  extra: { evocazione?: DragonDef['evocazione']; morte?: DragonDef['morte']; keywords?: DragonDef['keywords'] },
+): DragonDef {
+  return { kind: 'drago', id, nome, elemento, costo, attacco, vita, icona, keywords: extra.keywords ?? [], evocazione: extra.evocazione, morte: extra.morte };
+}
+
+/** Testo leggibile di un trigger. */
+export function testoTrigger(t: Trigger): string {
+  switch (t.tipo) {
+    case 'dannoTuttiAvversari': return `${t.valore} danni a tutti i draghi avversari`;
+    case 'dannoDragoPiuDebole': return `${t.valore} danni al drago avversario con meno vita`;
+    case 'dannoDragoPiuForte': return `${t.valore} danni al drago avversario con più attacco`;
+    case 'dannoGiocatore': return `${t.valore} danni all'avversario`;
+    case 'congelaPiuForte': return 'congela il drago avversario con più attacco';
+    case 'pesca': return `peschi ${t.valore} cart${t.valore === 1 ? 'a' : 'e'}`;
+    case 'cristalli': return `+${t.valore} cristallo per questo turno`;
+    case 'curaGiocatore': return `recuperi ${t.valore} vita`;
+    case 'potenziaAlleati': return `+${t.attacco}/+${t.vita} agli altri tuoi draghi`;
+    case 'scudoAlleati': return 'Scudo a tutti i tuoi draghi';
+    case 'evocaToken': return `evoca ${carta(t.defId).nome} (${(carta(t.defId) as DragonDef).attacco}/${(carta(t.defId) as DragonDef).vita})`;
+  }
+}
+
+/** Testo completo delle abilità di un drago (parole chiave + trigger). */
+export function testoDrago(d: DragonDef): string {
+  const parti: string[] = [];
+  if (d.keywords?.length) parti.push(d.keywords.map((k) => KEYWORD_INFO[k].nome).join(' · '));
+  if (d.evocazione) parti.push(`Evocazione: ${testoTrigger(d.evocazione)}.`);
+  if (d.morte) parti.push(`Morte: ${testoTrigger(d.morte)}.`);
+  return parti.join(' ');
+}
 
 const S = (
   id: string, nome: string, elemento: SpellDef['elemento'], costo: number,
@@ -98,6 +148,8 @@ export const INCANTESIMI: SpellDef[] = [
     'Peschi 1 carta.'),
 ];
 
+export const DRAGHI_BASE = DRAGHI.filter((d) => !d.token && Number(d.id.slice(1)) <= 12);
+export const DRAGHI_EFFETTO = DRAGHI.filter((d) => !d.token && Number(d.id.slice(1)) > 12);
 export const CARTE: CardDef[] = [...DRAGHI, ...INCANTESIMI];
 const byId = new Map(CARTE.map((c) => [c.id, c]));
 
@@ -121,12 +173,14 @@ export function vantaggio(attaccante: Element | 'neutro', difensore: Element): -
   return 0;
 }
 
-/** Danno modificato dal vantaggio elementale: +50% (per eccesso) in vantaggio, -25% (per difetto, min 1) in svantaggio. */
+/** Danno modificato dal vantaggio elementale: +1 (e almeno +25%) in vantaggio, -1 (min 1) in svantaggio. */
 export function dannoElementale(base: number, v: -1 | 0 | 1): number {
-  if (v === 1) return Math.ceil(base * 1.5);
-  if (v === -1) return Math.max(1, Math.floor(base * 0.75));
+  if (base <= 0) return 0;
+  if (v === 1) return Math.max(base + 1, Math.ceil(base * 1.25));
+  if (v === -1) return Math.max(1, base - 1);
   return base;
 }
+export const VANTAGGIO_TESTO = { su: '+1', giu: '−1' };
 
 export const KEYWORD_INFO: Record<NonNullable<DragonDef['keywords']>[number], { nome: string; testo: string }> = {
   guardiano: { nome: 'Guardiano', testo: 'I draghi avversari devono attaccare prima questo drago.' },
